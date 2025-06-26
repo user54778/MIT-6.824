@@ -1,17 +1,14 @@
 package mr
 
-//
 // RPC definitions.
-//
-// remember to capitalize all names.
-//
-
 import (
 	"os"
 	"strconv"
 )
 
-// TODO: Add your RPC definitions here.
+// Request: What does a worker send when asking for work?
+// Reply: What does the coordinator send back?
+// func (t *T) MethodName(argType T1, replyType *T2) error
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
