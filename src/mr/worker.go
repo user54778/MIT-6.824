@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"os"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -25,28 +27,60 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Exit would simply call os.Exit()
 	// Default could be same as Wait
 	for {
-		break
+		args := RequestTaskArgs{}
+		reply := RequestTaskReply{}
+		err := call("Coordinator.RequestTask", &args, &reply)
+		if !err {
+			break
+		}
+		fmt.Printf("Response from server as task id: %d\n", reply.TaskID)
+		switch reply.TaskType {
+		case Map:
+			mapWorker(mapf, &reply)
+		case Reduce:
+			reduceWorker()
+		case Wait:
+			time.Sleep(1 * time.Second)
+		case Exit:
+			os.Exit(0)
+		default:
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
-// TODO: Implement me!
-func mapWorker() {
-	/*
-		intermediate := []mr.KeyValue{}
-		for _, filename := range os.Args[2:] {
-			file, err := os.Open(filename)
-			if err != nil {
-				log.Fatalf("cannot open %v", filename)
-			}
-			content, err := ioutil.ReadAll(file)
-			if err != nil {
-				log.Fatalf("cannot read %v", filename)
-			}
-			file.Close()
-			kva := mapf(filename, string(content))
-			intermediate = append(intermediate, kva...)
-		}
-	*/
+func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
+	// A) Read file (input split in paper)
+	// C) Pass each k/v pair to mapf
+	// E) What we actually do -> Write output of mapf to temp file, then final output
+	// when done
+	data, err := os.ReadFile(reply.MapInput)
+	if err != nil {
+		log.Fatalf("failed to read %v", reply.MapInput)
+	}
+	kva := mapf(reply.MapInput, string(data))
+	// R reduce tasks, R partitions
+	// Partition 0 -> Reduce task 0
+	// ...
+	// Partition R - 1 -> Reduce task R - 1
+	// Each partition can contain multiple kvPairs the Reduce task can process
+	// We use ihash() % nReduce to place a reduce task
+	partition := make([][]KeyValue, reply.NReduceFiles)
+	for _, kv := range kva {
+		bucket := ihash(kv.Key) % reply.NReduceFiles
+		partition[bucket] = append(partition[bucket], kv)
+	}
+	// Tempwrite file
+	// Atomic Rename
+	for r, kvs := range partition {
+		writeIntermediateFile(reply.TaskID, r, kvs)
+	}
+	// Update task state for server by calling the server
+	finishRequest := TaskCompleteArgs{
+		ClientState: Completed,
+	}
+	finishResponse := TaskCompleteReply{}
+	call("", &finishRequest, &finishResponse)
 }
 
 // TODO: Implement me!
@@ -78,6 +112,36 @@ func reduceWorker() {
 	*/
 }
 
+// ihash chooses the reduce task number for each
+// KeyValue emitted by Map.
+// use ihash(key) % NReduce
+func ihash(key string) int {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return int(h.Sum32() & 0x7fffffff)
+}
+
+// writeIntermediateFile is a helper function to write intermediate k/v pairs
+// from the Map worker to a temporary file, encode its data to json
+// and then atomically store this temp file as a file on disk.
+//
+// The output format should look like mr-X-Y.
+func writeIntermediateFile(x, y int, kvs []KeyValue) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd() failed", err)
+	}
+	// Inter k/v pairs should be in format mr-X-Y
+	// enc := json.NewEncoder(file)
+	// for _, kv := ... {
+	//    err := enc.Encode(&kv)
+	// }
+	// os.CreateTemp -> os.Rename()
+	//
+	// TODO: implement me
+	return nil
+}
+
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
@@ -98,52 +162,3 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	fmt.Println(err)
 	return false
 }
-
-// ihash chooses the reduce task number for each
-// KeyValue emitted by Map.
-// use ihash(key) % NReduce
-func ihash(key string) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32() & 0x7fffffff)
-}
-
-func writeIntermediateFile(path string, kvPairs []KeyValue) error {
-	/*
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getwd() failed", err)
-		}
-	*/
-	// Inter k/v pairs should be in format mr-X-Y
-
-	panic("unimplemented")
-}
-
-/*
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-}
-*/

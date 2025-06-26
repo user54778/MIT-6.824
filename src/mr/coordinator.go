@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -106,11 +107,49 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 
 	for r := range c.reduceTasks {
-		c.mapTasks[r].State = Idle
+		c.reduceTasks[r].State = Idle
 	}
 
 	c.server()
 	return &c
+}
+
+func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// More sophistication later for the reply;
+	// for now we always reply with the Map task.
+	// What data do I need to send over to the worker?
+	// Indicate its a map task.
+	// File name to process
+	for i, task := range c.mapTasks {
+		// Check for timed-out tasks
+		if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
+			c.mapTasks[i].State = Idle
+			c.mapTasks[i].StartTime = time.Time{}
+		}
+
+		// Assign tasks to idle workers
+		if task.State == Idle {
+			task.StartTime = time.Now()
+			task.State = InProgress
+
+			reply.TaskType = Map
+			reply.MapInput = c.inFiles[i]
+			reply.TaskID = i
+			reply.NReduceFiles = c.nReduce
+			return nil
+		}
+	}
+	// maps done, assign reduce workers
+	if c.allMapsDone() {
+		// TODO : Implement me!
+		fmt.Println("UNIMPLEMENTED")
+	}
+	// check everything done
+	// shutdown
+	return nil
 }
 
 // O(n)
@@ -136,6 +175,7 @@ func (c *Coordinator) allReducesDone() bool {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+	// TODO:
 	return false
 }
 
