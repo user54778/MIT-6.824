@@ -24,9 +24,9 @@ type RequestTaskReply struct {
 
 type TaskCompleteArgs struct {
 	ClientState State
+	TaskType    TaskType
+	TaskID      int
 }
-
-type TaskCompleteReply struct{}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

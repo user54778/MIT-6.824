@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -33,12 +35,11 @@ func Worker(mapf func(string, string) []KeyValue,
 		if !err {
 			break
 		}
-		fmt.Printf("Response from server as task id: %d\n", reply.TaskID)
 		switch reply.TaskType {
 		case Map:
 			mapWorker(mapf, &reply)
 		case Reduce:
-			reduceWorker()
+			reduceWorker(reducef, &reply)
 		case Wait:
 			time.Sleep(1 * time.Second)
 		case Exit:
@@ -59,6 +60,7 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 		log.Fatalf("failed to read %v", reply.MapInput)
 	}
 	kva := mapf(reply.MapInput, string(data))
+	// Divide intermediate keys into buckets for R reduce tasks.
 	// R reduce tasks, R partitions
 	// Partition 0 -> Reduce task 0
 	// ...
@@ -75,16 +77,22 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 	for r, kvs := range partition {
 		writeIntermediateFile(reply.TaskID, r, kvs)
 	}
+	fmt.Printf("DEBUG: Map worker %d finished\n", reply.TaskID)
+
+	// TODO: finish updating task state
+
 	// Update task state for server by calling the server
-	finishRequest := TaskCompleteArgs{
+	updateRequest := TaskCompleteArgs{
 		ClientState: Completed,
+		TaskType:    Map,
+		TaskID:      reply.TaskID,
 	}
-	finishResponse := TaskCompleteReply{}
-	call("", &finishRequest, &finishResponse)
+	updateReply := TaskCompleteArgs{}
+	call("Coordinator.TaskComplete", &updateRequest, &updateReply)
 }
 
 // TODO: Implement me!
-func reduceWorker() {
+func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply) {
 	/*
 					*
 		*   Use sort.Slice() here instead
@@ -129,16 +137,29 @@ func ihash(key string) int {
 func writeIntermediateFile(x, y int, kvs []KeyValue) error {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("getwd() failed", err)
+		return fmt.Errorf("getwd() failed")
 	}
-	// Inter k/v pairs should be in format mr-X-Y
-	// enc := json.NewEncoder(file)
-	// for _, kv := ... {
-	//    err := enc.Encode(&kv)
-	// }
-	// os.CreateTemp -> os.Rename()
-	//
-	// TODO: implement me
+	tempName := fmt.Sprintf("mr-%d-%d", x, y)
+	f, err := os.CreateTemp(cwd, tempName)
+	if err != nil {
+		return errors.New("failed to create temporary file in writeIntermediateFile")
+	}
+	enc := json.NewEncoder(f)
+	for _, kv := range kvs {
+		err = enc.Encode(&kv)
+		if err != nil {
+			return errors.New("failed to encode kv pair in writeIntermediateFile")
+		}
+	}
+	err = os.Rename(f.Name(), tempName)
+	if err != nil {
+		return errors.New("failed to atomically rename temp file in writeIntermediateFile")
+	}
+	return nil
+}
+
+// Used in reduce
+func writeFinalOutput() error {
 	return nil
 }
 

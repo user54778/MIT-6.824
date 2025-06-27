@@ -114,20 +114,24 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	return &c
 }
 
+// RequestTask is a method on the Coordinator object that gives an RPC service to a worker client
+// to request for work to do in the MapReduce framework. This method also has the responsibility
+// for determining worker timeouts and when to hand out Map versus Reduce tasks, as well
+// as when to shut down the RPC service.
 func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// More sophistication later for the reply;
-	// for now we always reply with the Map task.
-	// What data do I need to send over to the worker?
 	// Indicate its a map task.
 	// File name to process
 	for i, task := range c.mapTasks {
 		// Check for timed-out tasks
 		if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
 			c.mapTasks[i].State = Idle
-			c.mapTasks[i].StartTime = time.Time{}
+			c.mapTasks[i].StartTime = time.Time{} // zero value time object
+			// FIXME: potential issue? continue?
+			continue
 		}
 
 		// Assign tasks to idle workers
@@ -144,11 +148,32 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	}
 	// maps done, assign reduce workers
 	if c.allMapsDone() {
-		// TODO : Implement me!
-		fmt.Println("UNIMPLEMENTED")
+		fmt.Println("DEBUG: ALL MAPS COMPLETE")
+		reply.TaskType = Exit
+		return nil
 	}
-	// check everything done
-	// shutdown
+
+	// TODO: Implement me!
+	// Assign work to reduce workers
+	// Await for all reduce workers to complete
+	// Shutdown
+	return nil
+}
+
+// TaskComplete is a method on the Coordinator object that provides an RPC service to a worker client
+// that tells the server it has completed its work task.
+func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteArgs) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Grab args
+	// Update this worker's task state
+	// For now, simply mark as Completed?
+	switch args.TaskType {
+	case Map:
+		c.mapTasks[args.TaskID].State = args.ClientState
+	case Reduce:
+		c.reduceTasks[args.TaskID].State = args.ClientState
+	}
 	return nil
 }
 
@@ -175,8 +200,7 @@ func (c *Coordinator) allReducesDone() bool {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	// TODO:
-	return false
+	return c.allMapsDone() && c.allReducesDone()
 }
 
 // start a thread that listens for RPCs from worker.go
