@@ -62,6 +62,8 @@ func (s TaskType) String() string {
 	}
 }
 
+// Type Task represents an aggregate of a State and an associated
+// time a worker is taking to do a Task.
 type Task struct {
 	State     State
 	StartTime time.Time
@@ -125,38 +127,75 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	// More sophistication later for the reply;
 	// Indicate its a map task.
 	// File name to process
-	for i, task := range c.mapTasks {
-		// Check for timed-out tasks
-		if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
-			c.mapTasks[i].State = Idle
-			c.mapTasks[i].StartTime = time.Time{} // zero value time object
-			// FIXME: potential issue? continue?
-			continue
-		}
+	if !c.allMapsDone() {
+		for i, task := range c.mapTasks {
+			fmt.Println("DEBUG: MAP")
+			// Check for timed-out tasks
+			if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
+				c.mapTasks[i].State = Idle
+				c.mapTasks[i].StartTime = time.Time{} // zero value time object
+				// continue(?)                              // skip this worker
+			}
 
-		// Assign tasks to idle workers
-		if task.State == Idle {
-			task.StartTime = time.Now()
-			task.State = InProgress
+			// Assign tasks to idle workers
+			if task.State == Idle {
+				task.StartTime = time.Now()
+				task.State = InProgress
 
-			reply.TaskType = Map
-			reply.MapInput = c.inFiles[i]
-			reply.TaskID = i
-			reply.NReduceFiles = c.nReduce
-			return nil
+				reply.TaskType = Map
+				reply.MapInput = c.inFiles[i]
+				reply.TaskID = i
+				reply.NReduceFiles = c.nReduce
+				return nil
+			} else {
+				reply.TaskType = Wait
+				return nil
+			}
 		}
 	}
-	// maps done, assign reduce workers
+
 	if c.allMapsDone() {
-		fmt.Println("DEBUG: ALL MAPS COMPLETE")
-		reply.TaskType = Exit
-		return nil
+		fmt.Println("DEBUG: ALL MAPS DONE")
 	}
 
-	// TODO: Implement me!
-	// Assign work to reduce workers
-	// Await for all reduce workers to complete
-	// Shutdown
+	// maps done, assign reduce workers
+	if !c.allReducesDone() {
+		fmt.Println("DEBUG: REDUCE")
+		for i, task := range c.reduceTasks {
+			if task.State == Completed {
+				c.markReduceDone()
+			}
+			if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
+				c.reduceTasks[i].State = Idle
+				c.reduceTasks[i].StartTime = time.Time{} // zero value time object
+			}
+			// Assign tasks to idle workers
+			if task.State == Idle {
+				task.StartTime = time.Now()
+				task.State = InProgress
+
+				reply.TaskType = Reduce
+				reply.TaskID = i
+				reply.NReduceFiles = c.nReduce
+				return nil
+			} else {
+				// No work available?
+				fmt.Printf("WAIT\n")
+				reply.TaskType = Wait
+				return nil
+			}
+		}
+	}
+
+	if c.allReducesDone() {
+		fmt.Println("DEBUG: ALL REDUCE DONE")
+	}
+
+	if c.Done() {
+		fmt.Println("DEBUG: EXIT")
+		reply.TaskType = Exit
+	}
+
 	return nil
 }
 
@@ -173,7 +212,10 @@ func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteAr
 		c.mapTasks[args.TaskID].State = args.ClientState
 	case Reduce:
 		c.reduceTasks[args.TaskID].State = args.ClientState
+	case Exit:
+		c.reduceTasks[args.TaskID].State = args.ClientState
 	}
+
 	return nil
 }
 
@@ -196,10 +238,19 @@ func (c *Coordinator) allReducesDone() bool {
 	return true
 }
 
+func (c *Coordinator) markReduceDone() bool {
+	for i := range c.reduceTasks {
+		c.reduceTasks[i].State = Completed
+	}
+	return true
+}
+
 // Done
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.allMapsDone() && c.allReducesDone()
 }
 

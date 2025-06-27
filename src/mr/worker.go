@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -79,8 +80,6 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 	}
 	fmt.Printf("DEBUG: Map worker %d finished\n", reply.TaskID)
 
-	// TODO: finish updating task state
-
 	// Update task state for server by calling the server
 	updateRequest := TaskCompleteArgs{
 		ClientState: Completed,
@@ -91,33 +90,75 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 	call("Coordinator.TaskComplete", &updateRequest, &updateReply)
 }
 
-// TODO: Implement me!
-func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply) {
-	/*
-					*
-		*   Use sort.Slice() here instead
-				sort.Sort(ByKey(intermediate))
+func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply) error {
+	// How do we perform shuffle?
+	// We need to read in the file(s) to perform reduce on.
+	kva := make([]KeyValue, 0)
+	for i := range reply.NReduceFiles {
+		s := fmt.Sprintf("mr-%d-%d", reply.TaskID, i)
+		f, err := os.Open(s)
+		if err != nil {
+			return errors.New(fmt.Sprintf("failed to open %v in reduceWorker", f, err))
+		}
+		dec := json.NewDecoder(f)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		f.Close()
+	}
+	// Shuffle: Sort by intermediate key such that occurrences of
+	// the same key are grouped together
+	sort.Slice(kva, func(i, j int) bool {
+		return kva[i].Key < kva[j].Key
+	})
 
-				oname := "mr-out-0"
-				ofile, _ := os.Create(oname)
-						i := 0
-						for i < len(intermediate) {
-							j := i + 1
-							for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-								j++
-							}
-							values := []string{}
-							for k := i; k < j; k++ {
-								values = append(values, intermediate[k].Value)
-							}
-							output := reducef(intermediate[i].Key, values)
+	// Perform Reduce
+	oname := fmt.Sprintf("mr-out-%d", reply.TaskID)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("os.Getwd() failed in reduce")
+	}
+	ofile, err := os.CreateTemp(cwd, oname)
+	if err != nil {
+		return fmt.Errorf("os.CreateTemp() failed in reduce")
+	}
 
-							// this is the correct format for each line of Reduce output.
-							fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
 
-							i = j
-						}
-	*/
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	err = os.Rename(ofile.Name(), oname)
+	if err != nil {
+		return fmt.Errorf("os.Rename() failed in reduce")
+	}
+	fmt.Println("DEBUG: REDUCE WORKER DONE")
+	// Send RPC request/response back to coordinator
+	// Update task state for server by calling the server
+	updateRequest := TaskCompleteArgs{
+		ClientState: Completed,
+		TaskType:    Exit,
+		TaskID:      reply.TaskID,
+	}
+	updateReply := TaskCompleteArgs{}
+	call("Coordinator.TaskComplete", &updateRequest, &updateReply)
+	return nil
 }
 
 // ihash chooses the reduce task number for each
@@ -159,9 +200,29 @@ func writeIntermediateFile(x, y int, kvs []KeyValue) error {
 }
 
 // Used in reduce
-func writeFinalOutput() error {
+/*
+func writeFinalOutput(reduce int) (error, []KeyValue) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd() failed")
+	}
+	tempName := fmt.Sprintf("mr-out-%d",  reduce)
+  f, err := os.CreateTemp(cwd, tempName)
+  if err != nil {
+    return errors.New("failed to create temp file in writeFinalOutput")
+  }
+  dec := json.NewDecoder(f)
+  kva := make([]KeyValue, 0)
+  for {
+    var kv KeyValue
+    if err := dec.Decode(&kv); err != nil {
+      break
+    }
+    kva = append(kva, kv)
+  }
 	return nil
 }
+*/
 
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
