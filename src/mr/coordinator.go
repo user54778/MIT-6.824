@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -102,6 +101,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nReduce:     nReduce,
 		mapTasks:    make([]Task, len(files)),
 		reduceTasks: make([]Task, nReduce),
+		mu:          sync.Mutex{},
 	}
 
 	for m := range c.mapTasks {
@@ -124,12 +124,10 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// More sophistication later for the reply;
-	// Indicate its a map task.
-	// File name to process
+	// Assign map workers
 	if !c.allMapsDone() {
 		for i, task := range c.mapTasks {
-			fmt.Println("DEBUG: MAP")
+			// fmt.Println("DEBUG: MAP")
 			// Check for timed-out tasks
 			if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
 				c.mapTasks[i].State = Idle
@@ -139,63 +137,59 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 
 			// Assign tasks to idle workers
 			if task.State == Idle {
-				task.StartTime = time.Now()
-				task.State = InProgress
+				c.mapTasks[i].StartTime = time.Now()
+				c.mapTasks[i].State = InProgress
 
 				reply.TaskType = Map
 				reply.MapInput = c.inFiles[i]
 				reply.TaskID = i
 				reply.NReduceFiles = c.nReduce
 				return nil
-			} else {
-				reply.TaskType = Wait
-				return nil
 			}
 		}
+		reply.TaskType = Wait
+		return nil
 	}
 
-	if c.allMapsDone() {
-		fmt.Println("DEBUG: ALL MAPS DONE")
-	}
+	/*
+		if c.allMapsDone() {
+			fmt.Println("DEBUG: ALL MAPS DONE")
+		}
+	*/
 
 	// maps done, assign reduce workers
 	if !c.allReducesDone() {
-		fmt.Println("DEBUG: REDUCE")
+		// fmt.Println("DEBUG: REDUCE")
 		for i, task := range c.reduceTasks {
-			if task.State == Completed {
-				c.markReduceDone()
-			}
+			// fmt.Printf("DEBUG: %d %v in REDUCE\n", i, task.State)
 			if task.State == InProgress && time.Since(task.StartTime) > 10*time.Second {
 				c.reduceTasks[i].State = Idle
 				c.reduceTasks[i].StartTime = time.Time{} // zero value time object
+				return nil
 			}
 			// Assign tasks to idle workers
 			if task.State == Idle {
-				task.StartTime = time.Now()
-				task.State = InProgress
+				c.reduceTasks[i].StartTime = time.Now()
+				c.reduceTasks[i].State = InProgress
 
 				reply.TaskType = Reduce
 				reply.TaskID = i
 				reply.NReduceFiles = c.nReduce
 				return nil
-			} else {
-				// No work available?
-				fmt.Printf("WAIT\n")
-				reply.TaskType = Wait
-				return nil
 			}
 		}
+		// FIXME:
+		c.markReduceDone()
 	}
 
-	if c.allReducesDone() {
-		fmt.Println("DEBUG: ALL REDUCE DONE")
-	}
+	/*
+		if c.allReducesDone() {
+			// fmt.Println("DEBUG: ALL REDUCE DONE")
+		}
+	*/
 
-	if c.Done() {
-		fmt.Println("DEBUG: EXIT")
-		reply.TaskType = Exit
-	}
-
+	// exit
+	reply.TaskType = Exit
 	return nil
 }
 
@@ -238,11 +232,10 @@ func (c *Coordinator) allReducesDone() bool {
 	return true
 }
 
-func (c *Coordinator) markReduceDone() bool {
+func (c *Coordinator) markReduceDone() {
 	for i := range c.reduceTasks {
 		c.reduceTasks[i].State = Completed
 	}
-	return true
 }
 
 // Done

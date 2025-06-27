@@ -78,7 +78,7 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 	for r, kvs := range partition {
 		writeIntermediateFile(reply.TaskID, r, kvs)
 	}
-	fmt.Printf("DEBUG: Map worker %d finished\n", reply.TaskID)
+	// fmt.Printf("DEBUG: Map worker %d finished\n", reply.TaskID)
 
 	// Update task state for server by calling the server
 	updateRequest := TaskCompleteArgs{
@@ -93,7 +93,7 @@ func mapWorker(mapf func(string, string) []KeyValue, reply *RequestTaskReply) {
 func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply) error {
 	// How do we perform shuffle?
 	// We need to read in the file(s) to perform reduce on.
-	kva := make([]KeyValue, 0)
+	kva := []KeyValue{}
 	for i := range reply.NReduceFiles {
 		s := fmt.Sprintf("mr-%d-%d", reply.TaskID, i)
 		f, err := os.Open(s)
@@ -148,12 +148,12 @@ func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply
 	if err != nil {
 		return fmt.Errorf("os.Rename() failed in reduce")
 	}
-	fmt.Println("DEBUG: REDUCE WORKER DONE")
+	// fmt.Println("DEBUG: REDUCE WORKER DONE")
 	// Send RPC request/response back to coordinator
 	// Update task state for server by calling the server
 	updateRequest := TaskCompleteArgs{
 		ClientState: Completed,
-		TaskType:    Exit,
+		TaskType:    Reduce,
 		TaskID:      reply.TaskID,
 	}
 	updateReply := TaskCompleteArgs{}
