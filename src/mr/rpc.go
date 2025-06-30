@@ -20,6 +20,7 @@ type RequestTaskReply struct {
 	MapInput     string // Input file for map task
 	TaskID       int
 	NReduceFiles int
+	NMapTasks    int
 }
 
 type TaskCompleteArgs struct {

@@ -94,8 +94,8 @@ func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply
 	// How do we perform shuffle?
 	// We need to read in the file(s) to perform reduce on.
 	kva := []KeyValue{}
-	for i := range reply.NReduceFiles {
-		s := fmt.Sprintf("mr-%d-%d", reply.TaskID, i)
+	for mapTask := 0; mapTask < reply.NMapTasks; mapTask++ {
+		s := fmt.Sprintf("mr-%d-%d", mapTask, reply.TaskID)
 		f, err := os.Open(s)
 		if err != nil {
 			return errors.New(fmt.Sprintf("failed to open %v in reduceWorker", f, err))
