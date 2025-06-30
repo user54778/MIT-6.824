@@ -98,7 +98,7 @@ func reduceWorker(reducef func(string, []string) string, reply *RequestTaskReply
 		s := fmt.Sprintf("mr-%d-%d", mapTask, reply.TaskID)
 		f, err := os.Open(s)
 		if err != nil {
-			return errors.New(fmt.Sprintf("failed to open %v in reduceWorker", f, err))
+			return fmt.Errorf("failed to open %v in reduceWorker", f)
 		}
 		dec := json.NewDecoder(f)
 		for {
