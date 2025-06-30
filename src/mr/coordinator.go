@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -98,6 +97,8 @@ type Coordinator struct {
 
 	finishMap    bool
 	finishReduce bool
+
+	exitedMapWorkers int
 }
 
 // Create a Coordinator.
@@ -105,15 +106,16 @@ type Coordinator struct {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		inFiles:       files,
-		nReduce:       nReduce,
-		mapTasks:      make([]Task, len(files)),
-		reduceTasks:   make([]Task, nReduce),
-		mapCounter:    0,
-		reduceCounter: 0,
-		finishMap:     false,
-		finishReduce:  false,
-		mu:            sync.Mutex{},
+		inFiles:          files,
+		nReduce:          nReduce,
+		mapTasks:         make([]Task, len(files)),
+		reduceTasks:      make([]Task, nReduce),
+		mapCounter:       0,
+		reduceCounter:    0,
+		finishMap:        false,
+		finishReduce:     false,
+		exitedMapWorkers: 0,
+		mu:               sync.Mutex{},
 	}
 
 	for m := range c.mapTasks {
@@ -123,6 +125,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	for r := range c.reduceTasks {
 		c.reduceTasks[r].State = Idle
 	}
+	fmt.Printf("DEBUG: %d files versus %v\n", len(files), files)
 
 	c.server()
 	return &c
@@ -135,9 +138,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Assign map workers
-	if c.mapCounter < len(c.inFiles) {
+	if c.mapCounter < len(c.mapTasks) {
 		fmt.Printf("DEBUG: Map counter: %d\n", c.mapCounter)
 		c.mapTasks[c.mapCounter].StartTime = time.Now()
 		c.mapTasks[c.mapCounter].State = InProgress
@@ -153,14 +154,26 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 
 	// Wait for Map workers to finish
 	if !c.finishMap {
+		fmt.Printf("c.mapCounter and mapTasks: %d %d\n", c.mapCounter, len(c.mapTasks))
 		for i, task := range c.mapTasks {
 			fmt.Printf("DEBUG: Map worker %d\n", i)
 			if task.State != Completed {
 				if time.Since(task.StartTime) > 10*time.Second {
 					fmt.Printf("Map worker %d timed out in state %v; reassigning work\n", i, task)
 					c.mapTasks[i].StartTime = time.Now()
-					c.mapTasks[i].State = InProgress
+					c.mapTasks[i].State = Idle
+					c.exitedMapWorkers++
+					continue
 
+					/*
+						reply.TaskType = Map
+						reply.MapInput = c.inFiles[i]
+						reply.TaskID = i
+						reply.NReduceFiles = c.nReduce
+						return nil
+					*/
+				} else if task.State == Idle {
+					fmt.Printf("Reassigning idle %d task %v\n", i, task)
 					reply.TaskType = Map
 					reply.MapInput = c.inFiles[i]
 					reply.TaskID = i
@@ -175,8 +188,19 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 		c.finishMap = true
 	}
 
-	// Assign reduce work
-	if c.reduceCounter < c.nReduce {
+	if c.exitedMapWorkers > 0 {
+		fmt.Printf("Only reduce %d workers\n", len(c.mapTasks)-c.exitedMapWorkers)
+		/*
+			c.reduceTasks[c.reduceCounter].StartTime = time.Now()
+			c.reduceTasks[c.reduceCounter].State = InProgress
+
+			reply.TaskType = Reduce
+			reply.TaskID = c.reduceCounter
+			reply.NReduceFiles = c.nReduce
+			reply.NMapTasks = len(c.inFiles)
+			c.reduceCounter++
+		*/
+	} else if c.reduceCounter < c.nReduce {
 		fmt.Printf("DEBUG: Reduce counter: %d\n", c.reduceCounter)
 		c.reduceTasks[c.reduceCounter].StartTime = time.Now()
 		c.reduceTasks[c.reduceCounter].State = InProgress
@@ -193,23 +217,19 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	if !c.finishReduce {
 		for i, task := range c.reduceTasks {
 			if task.State != Completed {
-				matches, err := filepath.Glob("mr-out-*")
-				if err != nil {
-					return err
-				}
-				fmt.Printf("DEBUG: reduce matches: %d\n", len(matches))
-				if len(matches) == c.nReduce-1 {
-					fmt.Printf("DEBUG: matches == nReduce, exiting...\n")
-					task.State = Completed
-					reply.TaskType = Exit
-					c.finishReduce = true
-					return nil
-				}
 				if time.Since(task.StartTime) > 10*time.Second {
 					fmt.Printf("Reduce worker %d timed out in state %v; reassigning work\n", i, task)
 					c.reduceTasks[i].StartTime = time.Now()
-					c.reduceTasks[i].State = InProgress
-
+					c.reduceTasks[i].State = Idle
+					continue
+					/*
+						reply.TaskType = Reduce
+						reply.TaskID = i
+						reply.NReduceFiles = c.nReduce
+						return nil
+					*/
+				} else if task.State == Idle {
+					fmt.Printf("Reassigning idle %d task %v\n", i, task)
 					reply.TaskType = Reduce
 					reply.TaskID = i
 					reply.NReduceFiles = c.nReduce
@@ -223,69 +243,6 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 		c.finishReduce = true
 	}
 
-	// Assign map workers
-	/*
-		if !c.allMapsDone() {
-			for i, task := range c.mapTasks {
-				fmt.Printf("DEBUG: Map worker %d\n", i)
-				// Check for timed-out tasks
-				if task.State == InProgress && time.Since(c.mapTasks[i].StartTime) > 10*time.Second {
-					c.mapTasks[i].State = Idle
-					c.mapTasks[i].StartTime = time.Time{} // zero value time object
-					continue                              // skip this worker
-				}
-
-				// Assign tasks to idle workers
-				if task.State == Idle {
-					c.mapTasks[i].StartTime = time.Now()
-					c.mapTasks[i].State = InProgress
-
-					reply.TaskType = Map
-					reply.MapInput = c.inFiles[i]
-					reply.TaskID = i
-					reply.NReduceFiles = c.nReduce
-					return nil
-				}
-			}
-			reply.TaskType = Wait
-			return nil
-		}
-
-		if c.allMapsDone() {
-			fmt.Println("DEBUG: ALL MAPS DONE")
-		}
-
-		// maps done, assign reduce workers
-		if !c.allReducesDone() {
-			// fmt.Println("DEBUG: REDUCE")
-			for i, task := range c.reduceTasks {
-				fmt.Printf("DEBUG: %d %v in REDUCE\n", i, task.State)
-				fmt.Printf("Worker %d\n", time.Since(c.reduceTasks[i].StartTime))
-				if task.State == InProgress && time.Since(c.reduceTasks[i].StartTime) > 10*time.Second {
-					c.reduceTasks[i].State = Idle
-					c.reduceTasks[i].StartTime = time.Time{} // zero value time object
-					continue
-				}
-				// Assign tasks to idle workers
-				if task.State == Idle {
-					c.reduceTasks[i].StartTime = time.Now()
-					c.reduceTasks[i].State = InProgress
-
-					reply.TaskType = Reduce
-					reply.TaskID = i
-					reply.NReduceFiles = c.nReduce
-					return nil
-				}
-			}
-			// FIXME:
-			// c.markReduceDone()
-		}
-
-		if c.allReducesDone() {
-			fmt.Println("DEBUG: ALL REDUCE DONE")
-		}
-
-	*/
 	// exit
 	reply.TaskType = Exit
 	return nil
@@ -296,6 +253,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteArgs) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	fmt.Printf("TaskComplete called by %v\n", args)
 	// Grab args
 	// Update this worker's task state
 	// For now, simply mark as Completed?
