@@ -3,4 +3,12 @@
 These are my solutions to the 2025 course of MIT's distributed systems.
 I used the 2021 course outline and lectures.
 
-## [x](18a63fb67e81ad457028e7b9ab592de00102b48f) Lab 1 MapReduce
+## Lab 1 MapReduce
+
+## Lab 2 Key/Value Server
+
+## Lab 3 Raft
+
+## Lab 4 Fault-tolerant Key/Value Service
+
+## Lab 5 Sharded Key/Value Service
