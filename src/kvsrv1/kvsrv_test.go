@@ -3,12 +3,12 @@ package kvsrv
 import (
 	// "log"
 
-	//"runtime"
+	"runtime"
 	"testing"
-	//"time"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
-	// kvtest "6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 )
 
 // Test Put with a single client and a reliable network
@@ -47,7 +47,6 @@ func TestReliablePut(t *testing.T) {
 	}
 }
 
-/*
 // Many clients putting on same key.
 func TestPutConcurrentReliable(t *testing.T) {
 	const (
@@ -123,6 +122,7 @@ func TestMemPutManyClientsReliable(t *testing.T) {
 	}
 }
 
+/*
 // Test with one client and unreliable network. If Clerk.Put returns
 // ErrMaybe, the Put must have happened, since the test uses only one
 // client.

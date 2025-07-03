@@ -33,7 +33,6 @@ type valueVersion struct {
 type KVServer struct {
 	mu sync.Mutex
 
-	// TODO: Your definitions here.
 	versionMap map[string]valueVersion
 }
 
@@ -41,7 +40,6 @@ func MakeKVServer() *KVServer {
 	kv := &KVServer{
 		versionMap: make(map[string]valueVersion),
 	}
-	// TODO: Your code here.
 	return kv
 }
 
@@ -51,9 +49,9 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if v, ok := kv.versionMap[args.Key]; ok {
-		fmt.Printf("DEBUG: Server get OK\n")
 		reply.Value = v.value
 		reply.Version = v.version
+		// fmt.Printf("DEBUG: Server Get %v\n", v.value)
 		reply.Err = rpc.OK
 		return
 	} else if !ok {
@@ -70,26 +68,32 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if v, ok := kv.versionMap[args.Key]; ok {
-		fmt.Printf("SRV: ok in put server; %v. Key: %v\n", v, args.Key)
+		// fmt.Printf("SRV: ok in put server; %v. Key: %v\n", v, args.Key)
 		if v.version == args.Version {
-			fmt.Printf("SRV: %v matches in server\n", v.version)
-			fmt.Printf("SRV: %v %v\n", v.value, v.version)
-			kv.versionMap[args.Key] = v
-			fmt.Printf("SRV: #%v\n", kv.versionMap[args.Key])
+			// fmt.Printf("SRV: %v matches in server\n", v.version)
+			// NOTE: v is the old value w/ old version num. We want a new valueVersion
+			// to be inserted in the map with this key
+			newVersion := valueVersion{
+				value:   args.Value,
+				version: v.version + 1,
+			}
+			kv.versionMap[args.Key] = newVersion
 
 			reply.Err = rpc.OK
 			return
 		} else {
-			fmt.Printf("SRV: versions %v %v dont match in server\n", v.version, args.Version)
+			fmt.Printf("SRV: versions %v %v dont match in server. Attempted: %v\n", v.version, args.Version, args.Key)
 			reply.Err = rpc.ErrVersion
 			return
 		}
 	} else if args.Version == 0 {
 		fmt.Printf("SRV: not ok in put server, but args.Version %v. Key attempted: %v\n", args.Version, args.Key)
 
-		v.version = 1
-		v.value = args.Value
-		kv.versionMap[args.Key] = v
+		newVersion := valueVersion{
+			value:   args.Value,
+			version: 1,
+		}
+		kv.versionMap[args.Key] = newVersion
 		fmt.Printf("SRV: #%v\n", kv.versionMap[args.Key])
 
 		reply.Err = rpc.OK
