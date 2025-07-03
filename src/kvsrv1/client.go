@@ -1,12 +1,17 @@
 package kvsrv
 
 import (
+	"fmt"
+
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
-	"6.5840/tester1"
+	kvtest "6.5840/kvtest1"
+	tester "6.5840/tester1"
 )
 
-
+// Clerk is a type that represents how the client will interact with the
+// k/v server, which sends RPCs to the server.
+// Clients can send two different RPCs to the server with Clerk;
+// Put and Get.
 type Clerk struct {
 	clnt   *tester.Clnt
 	server string
@@ -14,7 +19,7 @@ type Clerk struct {
 
 func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, server: server}
-	// You may add code here.
+	// NOTE: You may add code here.
 	return ck
 }
 
@@ -29,8 +34,24 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-	// You will have to modify this function.
-	return "", 0, rpc.ErrNoKey
+	args := rpc.GetArgs{
+		Key: key,
+	}
+	reply := rpc.GetReply{}
+	ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+	if !ok {
+		if reply.Err == rpc.ErrNoKey {
+			return "", 0, rpc.ErrNoKey
+		}
+		fmt.Printf("DEBUG: In client get, I should infinitely loop here...\n")
+	}
+	switch reply.Err {
+	case rpc.ErrNoKey:
+		return "", 0, rpc.ErrNoKey
+	default:
+		fmt.Printf("What error did you fail with? %#v\n", reply.Err)
+	}
+	return reply.Value, reply.Version, rpc.OK
 }
 
 // Put updates key with value only if the version in the
@@ -51,6 +72,25 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
-	return rpc.ErrNoKey
+	args := rpc.PutArgs{
+		Key:     key,
+		Value:   value,
+		Version: version,
+	}
+	reply := rpc.PutReply{}
+	ok := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
+	if !ok {
+		fmt.Printf("DEBUG: Client Put failed.\n")
+		return rpc.ErrVersion
+	}
+	switch reply.Err {
+	case rpc.ErrVersion:
+		fmt.Printf("DEBUG: Client Put failed with ErrVersion\n")
+		return rpc.ErrVersion
+	case rpc.ErrNoKey:
+		fmt.Printf("DEBUG: In client put, I should retry my rpc call... (ErrNoKey)\n ")
+		return rpc.ErrNoKey
+	}
+	fmt.Printf("FATAL: Offending put: (%#v %#v %#v)\n", key, value, version)
+	return rpc.OK
 }
