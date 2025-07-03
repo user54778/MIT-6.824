@@ -6,13 +6,13 @@ I used the 2021 course outline and lectures.
 ## Lab 1 MapReduce
 
 - [Worker](./src/mr/worker.go)
-- [RPC] (./src/mr/rpc.go)
-- [Coordinator] (./src/mr/coordinator.go)
+- [RPC](./src/mr/rpc.go)
+- [Coordinator](./src/mr/coordinator.go)
 
 ## Lab 2 Key/Value Server
 
-- [Client] (./src/kvsrv1/client.go)
-- [Server] (./src/kvsrv1/server.go)
+- [Client](./src/kvsrv1/client.go)
+- [Server](./src/kvsrv1/server.go)
 
 ## Lab 3 Raft
 
