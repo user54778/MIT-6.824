@@ -1,16 +1,26 @@
 package lock
 
 import (
+	"fmt"
+
+	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 )
 
+// Type Lock represents a lock layered on the client Clerk.Put() and Clerk.Get()
+// operations. Lock supports two methods: Acquire and Release.
+// Only one client may successfully acquire the lock at a time; other clients
+// must wait until the first client has release the lock using Release.
 type Lock struct {
 	// IKVClerk is a go interface for k/v clerks: the interface hides
 	// the specific Clerk type of ck but promises that ck supports
 	// Put and Get.  The tester passes the clerk in when calling
 	// MakeLock().
 	ck kvtest.IKVClerk
-	// NOTE: You may add code here
+	// The specific key to store the "lock state"
+	key string
+	// clientID represents the lock state; empty if unlocked, otherwise a randomly generated string per lock client.
+	clientID string
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -19,15 +29,77 @@ type Lock struct {
 // Use l as the key to store the "lock state" (you would have to decide
 // precisely what the lock state is).
 func MakeLock(ck kvtest.IKVClerk, l string) *Lock {
-	lk := &Lock{ck: ck}
-	// NOTE: You may add code here
+	lk := &Lock{
+		ck:       ck,
+		key:      l,
+		clientID: kvtest.RandValue(8),
+	}
 	return lk
 }
 
+// Acquire is a method on the Lock type that attempts to acquire a lock
+// layerd on a client's Put and Get calls.
+// The Get and Put calls act as an atomic test on the lock state,
+// and determine if we can acquire the lock.
 func (lk *Lock) Acquire() {
-	// TODO: Your code here
+	// The question then becomes *how* we want to implement the lock.
+	// It could be a simple spin-lock, with a sleep mechanism? -> No.
+	// Let's try a simple spin-lock.
+	// for { if sync.CompareAndSwap(?????, ????) { return } time.Sleep(???)}
+	// What values are we swapping?
+	//
+	// Above is wrong; The IDEA IS correct, but we're not implementing an operating
+	// system primitive.
+	// Instead, we are testing against the LOCK STATE in this instance
+	// but the idea is actually quite similar.
+	// Our Clerk.Get() call is our atomic TAS/CAS instruction in this case,
+	// and we are testing against it. Besides that, this is, in essence still a spin-lock.
+	for {
+		val, vers, err := lk.ck.Get(lk.key)
+		switch err {
+		case rpc.ErrNoKey:
+			// Attempt to create a lock
+			fmt.Printf("RPC NO KEY\n")
+			rpcErr := lk.ck.Put(lk.key, lk.clientID, vers)
+			if rpcErr == rpc.OK {
+				return
+			}
+			// put failed, keep retrying
+			fmt.Printf("Put failed, assuming someone got here first...\n")
+		case rpc.OK:
+			// check if key is free on this key
+			// if succeed, return
+			fmt.Printf("ACQUIRE: rpc.OK val: %#v\n", val)
+			if val == "" {
+				err = lk.ck.Put(lk.key, lk.clientID, vers)
+				if err == rpc.OK {
+					return
+				}
+				fmt.Printf("Put failed, assuming someone got here first...\n")
+			}
+		}
+		// NOTE: Perhaps sleep here to save CPU cycles.
+	}
 }
 
+// Release is a method on the Lock type that should release a lock Acquire()'d
+// previously on this client.
 func (lk *Lock) Release() {
-	// TODO: Your code here
+	// As with Acquire(), this is doing simply the opposite of what the OS
+	// spin-lock should do.
+	val, vers, err := lk.ck.Get(lk.key)
+	if err != rpc.OK {
+		return
+	}
+
+	if val != lk.clientID {
+		// someone is trying to release a lock they don't own
+		fmt.Printf("SOMEONE TRIED TO RELEASE LOCK DON'T OWN: %#v %#v\n", val, lk.clientID)
+		return
+	}
+
+	err = lk.ck.Put(lk.key, "", vers)
+	if err != rpc.OK {
+		return
+	}
 }
