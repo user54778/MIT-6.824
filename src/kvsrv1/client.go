@@ -48,25 +48,6 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		Key: key,
 	}
 	reply := rpc.GetReply{}
-	//retries := 0
-	//for retries < maxRetries {
-	/*
-		fmt.Printf("CLIENT: Calling get %d time\n", retries)
-		ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
-		if !ok {
-			log.Fatal("Call failed in client Get")
-		}
-		if reply.Err == rpc.ErrNoKey {
-			break
-		} else if reply.Err == rpc.OK {
-			break
-		}
-	*/
-	//retries++
-	//fmt.Printf("CLIENT: Retrying... %v\n", retries)
-	// time.Sleep(1 * time.Second)
-	//}
-	//
 	ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
 	if !ok {
 		log.Fatal("Call failed in client Get")
@@ -75,7 +56,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		fmt.Printf("DEBUG: Client Get no key.\n")
 		return "", 0, rpc.ErrNoKey
 	}
-	fmt.Printf("Do my values make sense? %v %v %v\n", reply.Value, reply.Version, reply.Err)
+	// fmt.Printf("Do my values make sense? %v %v %v\n", reply.Value, reply.Version, reply.Err)
 	return reply.Value, reply.Version, rpc.OK
 }
 
@@ -107,17 +88,19 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	if !ok {
 		log.Fatal(ok)
 	}
+
 	if _, ok := ck.rpcState[value]; !ok {
 		ck.rpcState[value] = 0
 	} else {
 		ck.rpcState[value]++
 	}
+
 	switch reply.Err {
 	case rpc.ErrVersion:
 		if ck.rpcState[value] == 1 {
 			return rpc.ErrVersion
 		} else {
-			fmt.Printf("CLIENT: Maybe?: %v\n", key)
+			// fmt.Printf("CLIENT: Maybe?: %v\n", key)
 			return rpc.ErrMaybe
 		}
 	case rpc.ErrNoKey:
@@ -128,20 +111,4 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	}
 	log.Fatal("Unexpected reply.Err")
 	return rpc.OK
-	/*
-		if !ok {
-			fmt.Printf("DEBUG: Client Put failed.\n")
-			return rpc.ErrVersion
-		}
-		switch reply.Err {
-		case rpc.ErrVersion:
-			fmt.Printf("DEBUG: Client Put failed with ErrVersion\n")
-			return rpc.ErrVersion
-		case rpc.ErrNoKey:
-			fmt.Printf("DEBUG: In client put, I should retry my rpc call... (ErrNoKey)\n ")
-			return rpc.ErrNoKey
-		}
-	*/
-	// fmt.Printf("FATAL: Offending put: (%#v %#v %#v)\n", key, value, version)
-	//return rpc.OK
 }

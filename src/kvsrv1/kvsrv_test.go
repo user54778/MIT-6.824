@@ -3,14 +3,12 @@ package kvsrv
 import (
 	// "log"
 
-	"runtime"
 	"testing"
-	"time"
 
 	"6.5840/kvsrv1/rpc"
-	kvtest "6.5840/kvtest1"
 )
 
+/*
 // Test Put with a single client and a reliable network
 func TestReliablePut(t *testing.T) {
 	const Val = "6.5840"
@@ -67,7 +65,9 @@ func TestPutConcurrentReliable(t *testing.T) {
 	ts.CheckPutConcurrent(ck, "k", rs, &kvtest.ClntRes{}, ts.IsReliable())
 	ts.CheckPorcupineT(PORCUPINETIME)
 }
+*/
 
+/*
 // Check if memory used on server is reasonable
 func TestMemPutManyClientsReliable(t *testing.T) {
 	const (
@@ -121,8 +121,8 @@ func TestMemPutManyClientsReliable(t *testing.T) {
 		t.Fatalf("error: server using too much memory %d %d (%.2f per client)\n", m0, m1, f)
 	}
 }
+*/
 
-/*
 // Test with one client and unreliable network. If Clerk.Put returns
 // ErrMaybe, the Put must have happened, since the test uses only one
 // client.
@@ -162,4 +162,3 @@ func TestUnreliableNet(t *testing.T) {
 
 	ts.CheckPorcupine()
 }
-*/

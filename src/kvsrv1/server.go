@@ -1,7 +1,6 @@
 package kvsrv
 
 import (
-	"fmt"
 	"log"
 	"sync"
 
@@ -20,10 +19,10 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 // ValueVersion is a tuple-like struct holding a value pair
-// for Key entry in the server.
+// for a key entry in the server.
 type valueVersion struct {
-	value   string
-	version rpc.Tversion
+	value   string       // value user sends via the Clerk
+	version rpc.Tversion // number of times a key has been written
 }
 
 // KVServer represents the server with which the Clerk representing a client
@@ -31,7 +30,7 @@ type valueVersion struct {
 // an in-memory map that records for each key a (value, version tuple).
 // The version number records the number of times the key has been written.
 type KVServer struct {
-	mu sync.Mutex
+	mu sync.Mutex // protect the server
 
 	versionMap map[string]valueVersion
 }
@@ -82,19 +81,19 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.OK
 			return
 		} else {
-			fmt.Printf("SRV: versions %v %v dont match in server. Attempted: %v\n", v.version, args.Version, args.Key)
+			// fmt.Printf("SRV: versions %v %v dont match in server. Attempted: %v\n", v.version, args.Version, args.Key)
 			reply.Err = rpc.ErrVersion
 			return
 		}
 	} else if args.Version == 0 {
-		fmt.Printf("SRV: not ok in put server, but args.Version %v. Key attempted: %v\n", args.Version, args.Key)
+		// fmt.Printf("SRV: not ok in put server, but args.Version %v. Key attempted: %v\n", args.Version, args.Key)
 
 		newVersion := valueVersion{
 			value:   args.Value,
 			version: 1,
 		}
 		kv.versionMap[args.Key] = newVersion
-		fmt.Printf("SRV: #%v\n", kv.versionMap[args.Key])
+		// fmt.Printf("SRV: #%v\n", kv.versionMap[args.Key])
 
 		reply.Err = rpc.OK
 		return
