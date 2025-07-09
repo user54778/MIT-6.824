@@ -3,15 +3,17 @@ package kvsrv
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 	tester "6.5840/tester1"
 )
 
-const (
-	maxRetries = 100
-)
+type retryReturn struct {
+	success bool
+	retries int
+}
 
 // Clerk is a type that represents how the client will interact with the
 // k/v server, which sends RPCs to the server.
@@ -21,14 +23,18 @@ type Clerk struct {
 	clnt   *tester.Clnt
 	server string
 
-	rpcState map[string]int // K: Version, V: RPC calls
+	// rpcState int // K: Version, V: RPC calls
+	retryReturn retryReturn
 }
 
 func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 	ck := &Clerk{
-		clnt:     clnt,
-		server:   server,
-		rpcState: make(map[string]int),
+		clnt:   clnt,
+		server: server,
+		retryReturn: retryReturn{
+			success: false,
+			retries: 0,
+		},
 	}
 	return ck
 }
@@ -48,10 +54,27 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		Key: key,
 	}
 	reply := rpc.GetReply{}
-	ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
-	if !ok {
-		log.Fatal("Call failed in client Get")
+	/*
+		for {
+			fmt.Printf("Calling ok in Get...\n")
+			ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+			if !ok {
+				// log.Fatal("Call failed in client Get")
+				fmt.Printf("DEBUG: No response in Get. Retrying...\n")
+				time.Sleep(100 * time.Millisecond)
+			} else {
+				fmt.Printf("Get response ok: %#v\n", reply)
+				break
+			}
+		}
+	*/
+	retry := retryCall(func() bool {
+		return ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+	}, 100)
+	if !retry.success {
+		fmt.Printf("Fatal in Get?\n")
 	}
+
 	if reply.Err == rpc.ErrNoKey {
 		fmt.Printf("DEBUG: Client Get no key.\n")
 		return "", 0, rpc.ErrNoKey
@@ -84,23 +107,40 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 		Version: version,
 	}
 	reply := rpc.PutReply{}
-	ok := ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
-	if !ok {
-		log.Fatal(ok)
+	retry := retryCall(func() bool {
+		return ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
+	}, 100)
+	if !retry.success {
+		fmt.Printf("Fatal?\n")
 	}
 
-	if _, ok := ck.rpcState[value]; !ok {
-		ck.rpcState[value] = 0
-	} else {
-		ck.rpcState[value]++
-	}
+	/*
+		if !ok {
+			// log.Fatal(ok)
+			fmt.Printf("Retry count: %d\n", retries)
+			fmt.Printf("DEBUG: No response in Put. Retrying...\n")
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			fmt.Printf("Put OK.\n")
+		}
+	*/
+
+	/*
+		if _, ok := ck.rpcState[value]; !ok {
+			ck.rpcState[value] = 0
+		} else {
+			ck.rpcState[value]++
+		}
+	*/
+	// fmt.Printf("DEBUG: rpcState: %#v\n", ck.rpcState)
 
 	switch reply.Err {
 	case rpc.ErrVersion:
-		if ck.rpcState[value] == 1 {
+		if retry.retries < 1 {
+			// fmt.Printf("DEBUG: PUT ErrVersion\n")
 			return rpc.ErrVersion
 		} else {
-			// fmt.Printf("CLIENT: Maybe?: %v\n", key)
+			// fmt.Printf("DEBUG: Maybe?: %v\n", key)
 			return rpc.ErrMaybe
 		}
 	case rpc.ErrNoKey:
@@ -109,6 +149,29 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	case rpc.OK:
 		return rpc.OK
 	}
-	log.Fatal("Unexpected reply.Err")
-	return rpc.OK
+	log.Fatal("Impossible reply.Err")
+	return rpc.ErrVersion
+}
+
+// retryCall simply loops up to maxRetries times while calling closure
+// fn. It is used for making an RPC call in the Clerk and retrying failed
+// RPC's due to network issues.
+func retryCall(fn func() bool, maxRetries int) retryReturn {
+	for retries := 0; retries < maxRetries; retries++ {
+		if ok := fn(); ok {
+			return retryReturn{
+				success: true,
+				retries: retries,
+			}
+		}
+
+		if retries < maxRetries-1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	return retryReturn{
+		success: false,
+		retries: maxRetries,
+	}
 }

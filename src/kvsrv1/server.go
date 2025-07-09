@@ -67,9 +67,8 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if v, ok := kv.versionMap[args.Key]; ok {
-		// fmt.Printf("SRV: ok in put server; %v. Key: %v\n", v, args.Key)
+		// Safe to resend Put RPC with same version number
 		if v.version == args.Version {
-			// fmt.Printf("SRV: %v matches in server\n", v.version)
 			// NOTE: v is the old value w/ old version num. We want a new valueVersion
 			// to be inserted in the map with this key
 			newVersion := valueVersion{
@@ -81,13 +80,13 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 			reply.Err = rpc.OK
 			return
 		} else {
-			// fmt.Printf("SRV: versions %v %v dont match in server. Attempted: %v\n", v.version, args.Version, args.Key)
+			// Version provided doesn't match. Something went wrong with Clerk
+			// such that its providing un-matched values (i.e., network issue with retry)
 			reply.Err = rpc.ErrVersion
 			return
 		}
 	} else if args.Version == 0 {
 		// fmt.Printf("SRV: not ok in put server, but args.Version %v. Key attempted: %v\n", args.Version, args.Key)
-
 		newVersion := valueVersion{
 			value:   args.Value,
 			version: 1,
