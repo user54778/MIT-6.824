@@ -13,6 +13,7 @@ I used the 2021 course outline and lectures.
 
 - [Client](./src/kvsrv1/client.go)
 - [Server](./src/kvsrv1/server.go)
+- [Lock](./src/kvsrv1/lock/lock.go)
 
 ## Lab 3 Raft
 
