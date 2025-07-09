@@ -2,6 +2,8 @@ package lock
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
@@ -65,20 +67,32 @@ func (lk *Lock) Acquire() {
 				return
 			}
 			// put failed, keep retrying
-			fmt.Printf("Put failed, assuming someone got here first...\n")
+			fmt.Printf("ErrNoKey: Put failed, assuming someone got here first...\n")
+			fmt.Printf("ErrNoKey: Put err: %v\n", rpcErr)
 		case rpc.OK:
 			// check if key is free on this key
 			// if succeed, return
-			fmt.Printf("ACQUIRE: rpc.OK val: %#v\n", val)
 			if val == "" {
-				err = lk.ck.Put(lk.key, lk.clientID, vers)
-				if err == rpc.OK {
+				// No one holds this lock if val == ""
+				putErr := lk.ck.Put(lk.key, lk.clientID, vers)
+				if putErr == rpc.OK {
 					return
 				}
-				fmt.Printf("Put failed, assuming someone got here first...\n")
+				// Did the put to claim the lock actually succeed? (Maybe? Maybe not?)
+				if putErr == rpc.ErrMaybe {
+					// Check the truth of this by grabbing the lock
+					val, _, getErr := lk.ck.Get(lk.key)
+					if val == lk.clientID && getErr == rpc.OK {
+						return
+					}
+					// otherwise continue
+				}
 			}
+		case rpc.ErrMaybe:
+			fmt.Printf("ErrMaybe Retry Get...\n")
 		}
 		// NOTE: Perhaps sleep here to save CPU cycles.
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -94,8 +108,7 @@ func (lk *Lock) Release() {
 
 	if val != lk.clientID {
 		// someone is trying to release a lock they don't own
-		fmt.Printf("SOMEONE TRIED TO RELEASE LOCK DON'T OWN: %#v %#v\n", val, lk.clientID)
-		return
+		log.Fatal(fmt.Sprintf("SOMEONE TRIED TO RELEASE LOCK DON'T OWN: %#v %#v\n", val, lk.clientID))
 	}
 
 	err = lk.ck.Put(lk.key, "", vers)
