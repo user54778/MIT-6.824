@@ -24,21 +24,12 @@ from rich.console import Console
 from rich.columns import Columns
 
 
-# logError  logTopic = "ERRO"
-# logWarn   logTopic = "WARN"
-# logCommit logTopic = "CMIT"
-# logInfo   logTopic = "INFO"
-# logVote   logTopic = "VOTE"
-# logLeader logTopic = "LEAD"
-# logTimer  logTopic = "TIMR"
-# logTerm   logTopic = "TERM"
-
 TOPICS = {
     "ERRO": "red",
     "WARN": "bright_yellow",
     "TRCE": "red",
     "CMIT": "magenta",
-    "INFO": "bright_white",
+    "INFO": "navajo_white1",
     "VOTE": "bright_cyan",
     "TIMR": "navy_blue",
     "TERM": "green",
@@ -97,9 +88,10 @@ def main():
     for line in input_:
         i = -1
         try:
-            time = int(line[6:])
+            time = int(line[:6])
             topic = line[7:11]
             msg = line[12:].strip()
+
             if topic not in topics:
                 continue
 
@@ -112,19 +104,20 @@ def main():
             # Colorize output
             if colorize and topic in TOPICS:
                 color = TOPICS[topic]
-                msg = f"[{color}{msg}[/{color}]"
+                msg = f"[{color}]{msg}[/{color}]"
 
             # Single column. Always the case for debug calls in tests.
             if n_columns is None or topic == "TEST":
-                print(time, msg)
+                console.print(time, msg)
             # Multi column printing. Timing is dropped to maximize horizontal space.
             else:
                 cols = ["" for _ in range(n_columns)]
-                msg = "" + msg
+                msg = " " + msg
                 cols[i] = msg
                 col_width = int(width / n_columns)
                 cols = Columns(cols, width=col_width - 1, equal=True, expand=True)
-                print(cols)
+                # NOTE: need to use console's print method
+                console.print(cols)
         except:
             if line.startswith("panic"):
                 panic = True
