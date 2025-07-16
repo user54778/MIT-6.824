@@ -26,13 +26,14 @@ from rich.columns import Columns
 
 TOPICS = {
     "ERRO": "red",
-    "WARN": "bright_yellow",
+    "WARN": "indian_red",
     "TRCE": "red",
     "CMIT": "magenta",
     "INFO": "navajo_white1",
     "VOTE": "bright_cyan",
     "TIMR": "navy_blue",
     "TERM": "green",
+    "DBUG": "sandy_brown",
 }
 
 

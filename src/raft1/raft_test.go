@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 // The tester generously allows solutions to complete elections in one second
@@ -40,6 +40,7 @@ func TestInitialElection3A(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	term1 := ts.checkTerms()
 	if term1 < 1 {
+		// TODO: pretty print
 		ts.t.Fatalf("term is %v, but should be at least 1", term1)
 	}
 
@@ -47,7 +48,8 @@ func TestInitialElection3A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := ts.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		// fmt.Printf("warning: term changed even though there were no failures")
+		Debug(logWarn, "warning: term changed even though there were no failures")
 	}
 
 	// there should still be a leader.
@@ -183,7 +185,6 @@ func TestRPCBytes3B(t *testing.T) {
 	if got > expected+50000 {
 		t.Fatalf("too many RPC bytes; got %v, expected %v", got, expected)
 	}
-
 }
 
 // test just failure of followers.
@@ -985,7 +986,6 @@ func TestUnreliableAgree3C(t *testing.T) {
 	wg.Wait()
 
 	ts.one(100, servers, true)
-
 }
 
 func TestFigure8Unreliable3C(t *testing.T) {
@@ -1051,7 +1051,6 @@ func TestFigure8Unreliable3C(t *testing.T) {
 }
 
 func internalChurn(t *testing.T, reliable bool) {
-
 	servers := 5
 	ts := makeTest(t, servers, reliable, false)
 	defer ts.cleanup()

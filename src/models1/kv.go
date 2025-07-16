@@ -41,12 +41,12 @@ var KvModel = porcupine.Model{
 		}
 		return ret
 	},
-	Init: func() interface{} {
+	Init: func() any {
 		// note: we are modeling a single key's value here;
 		// we're partitioning by key, so this is okay
 		return KvState{"", 0}
 	},
-	Step: func(state, input, output interface{}) (bool, interface{}) {
+	Step: func(state, input, output any) (bool, any) {
 		inp := input.(KvInput)
 		out := output.(KvOutput)
 		st := state.(KvState)
@@ -65,7 +65,7 @@ var KvModel = porcupine.Model{
 			return false, "<invalid>"
 		}
 	},
-	DescribeOperation: func(input, output interface{}) string {
+	DescribeOperation: func(input, output any) string {
 		inp := input.(KvInput)
 		out := output.(KvOutput)
 		switch inp.Op {

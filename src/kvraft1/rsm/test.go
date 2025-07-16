@@ -2,10 +2,10 @@ package rsm
 
 import (
 	//"log"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
-	"fmt"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"

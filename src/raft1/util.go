@@ -41,15 +41,26 @@ type logTopic string
 
 // A collection of logTopics that will be parsed by our pretty printer.
 const (
-	logError  logTopic = "ERRO"
-	logWarn   logTopic = "WARN"
-	logTrace  logTopic = "TRCE"
+	// Error
+	logError logTopic = "ERRO"
+	// Warn
+	logWarn logTopic = "WARN"
+	// Trace
+	logTrace logTopic = "TRCE"
+	// Commit
 	logCommit logTopic = "CMIT"
-	logInfo   logTopic = "INFO"
-	logVote   logTopic = "VOTE"
+	// Info
+	logInfo logTopic = "INFO"
+	// Debug
+	logDebug logTopic = "DBUG"
+	// Vote
+	logVote logTopic = "VOTE"
+	// Leader
 	logLeader logTopic = "LEAD"
-	logTimer  logTopic = "TIMR"
-	logTerm   logTopic = "TERM"
+	// Long running timer
+	logTimer logTopic = "TIMR"
+	// Term
+	logTerm logTopic = "TERM"
 )
 
 // global variables for use by Debug
@@ -68,8 +79,8 @@ func init() {
 // Debug dumps logging output dependent on a verbosity environment variable sent in.
 // It prints a message along with a Raft topic and the amount of milliseconds since the start
 // of the run.
-func Debug(topic logTopic, level int, format string, msg ...any) {
-	if debugVerbosity >= level {
+func Debug(topic logTopic, format string, msg ...any) {
+	if debugVerbosity >= 1 {
 		elapsed := time.Since(debugStart).Milliseconds()
 		prefix := fmt.Sprintf("%06d %s ", elapsed, string(topic))
 		format = prefix + format
