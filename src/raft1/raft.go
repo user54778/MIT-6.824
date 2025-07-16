@@ -22,19 +22,25 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	state RaftState // State a given Raft replica is in (Follower, Candidate, or Leader)
-
 	// NOTE: Persistent State: These fields must be stored to disk prior to responding to RPCs
 	currentTerm int        // Latest term server has seen (a monotonic integer)
 	votedFor    int        // The candidateID that received the vote in the currentTerm, or -1 if none.
-	logEntry    []LogEntry // log[] The log entries to replicate (3B onward)
+	logEntries  []LogEntry // log[] The log entries to replicate (3B onward)
 
 	// NOTE: Volatile State on all servers
-	// commitIndex
-	// lastApplied
+	// TODO: 3B-3D
+	commitIndex int
+	lastApplied int
 	// NOTE: Volatile state on leaders
-	// nextIndex[]
-	// matchIndex[]
+	// TODO: 3B-3D
+	nextIndex  []int
+	matchIndex []int
+
+	// Additional fields
+	state     RaftState // State a given Raft replica is in (Follower, Candidate, or Leader)
+	voteTotal int       // Total votes a replica has received
+
+	hbChan chan bool
 }
 
 // Type raftstate represents one of three states at any given point
@@ -55,13 +61,12 @@ type LogEntry struct {
 	Command any // State machine command
 }
 
-// return currentTerm and whether this server
+// GetState returns the currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
-	var isleader bool
-	// TODO: Your code here (3A).
-	return term, isleader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.state == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -121,17 +126,58 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// TODO: Your data here (3A, 3B).
+	Term        int
+	CandidateID int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// TODO: Your data here (3A).
+	Term        int
+	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
+type AppendEntriesArgs struct {
+	Term     int
+	LeaderID int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+// RequestVote is an RPC handler called during the process of Leader Election.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// TODO: Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// You don't get MY vote: term < currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	// Whoever I am, I need to step down and become a follower since my term < the RPC term
+	if rf.currentTerm < args.Term {
+		rf.transitionFollower()
+	}
+
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+
+	// Otherwise, what will happen?
+	// if votedFor is nil, or candidateID == votedFor, && log is at least as up to date as receiver's log
+	// grant vote
+	// for now, simply do first part as valid
+	if rf.votedFor < 0 || rf.votedFor == args.CandidateID {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateID
+		// NOTE: send indication of vote granted
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -161,8 +207,40 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if !ok {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// invalid state i can be in s.t. i shouldn't proceed?
+	if rf.state != Candidate || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
+		return
+	}
+	// go to follower?
+	if reply.Term > rf.currentTerm {
+		rf.transitionFollower()
+		return
+	}
+
+	// if we recv VoteGranted?
+	if reply.VoteGranted {
+		rf.voteTotal++
+		// send vote somehow
+	}
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// TODO: implement me!
+	rf.hbChan <- true
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	// TODO: implement me!
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -207,18 +285,49 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) electionTimeout() int64 {
+	// pause for a random amount of time between 50 and 350
+	// milliseconds.
+	// ms := 50 + (rand.Int63() % 300)
+	// time.Sleep(time.Duration(ms) * time.Millisecond)
+	return 50 + (rand.Int63() % 300)
+}
+
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		// TODO: Your code here (3A)
-		//
-		// Check if a leader election should be started.
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		Debug(logDebug, "S%d in rf.ticker()", rf.me)
+		// time.Sleep(time.Duration(rf.getTimeout()) * time.Millisecond)
+		switch rf.state {
+		case Follower:
+			select {
+			case <-rf.hbChan:
+				Debug(logDebug, "S%d received heartbeat", rf.me)
+				// reset timeout
+			default:
+				time.Sleep(time.Duration(rf.electionTimeout()) * time.Millisecond)
+				Debug(logInfo, "S%d timed out. Calling transitionCandidate()", rf.me)
+				rf.transitionCandidate()
+			}
+		case Candidate:
 
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		case Leader:
+		}
 	}
 }
+
+// transitionCandidate -> MUST be a Follower that has timed out, suspecting the Leader failed.
+func (rf *Raft) transitionCandidate() {
+	Debug(logDebug, "S%d in transitionCandidate", rf.me)
+}
+
+// transitionLeader -> MUST be a Candidate that receives values from quorum of nodes.
+func (rf *Raft) transitionLeader() {}
+
+// transitionFollower -> A new term was discovered; used by both Candidate and Leader
+func (rf *Raft) transitionFollower() {}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -246,17 +355,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		logEntry    []LogEntry // log[] The log entries to replicate (3B onward)
 	*/
 	rf.state = Follower
-	rf.currentTerm = -1
+	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.logEntry = make([]LogEntry, 0)
+	rf.voteTotal = 0
+	rf.logEntries = []LogEntry{}
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.hbChan = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	Debug(logInfo, "S%d Follower first initialized", rf.me)
+	Debug(logDebug, "S%d Follower first initialized", rf.me)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
+	// Hint 4?
 
 	return rf
 }
