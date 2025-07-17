@@ -40,7 +40,9 @@ type Raft struct {
 	state     RaftState // State a given Raft replica is in (Follower, Candidate, or Leader)
 	voteTotal int       // Total votes a replica has received
 
-	hbChan chan bool
+	hbChan       chan bool
+	sendVoteChan chan bool
+	winElectChan chan bool
 }
 
 // Type raftstate represents one of three states at any given point
@@ -64,8 +66,7 @@ type LogEntry struct {
 // GetState returns the currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// must hold lock
 	return rf.currentTerm, rf.state == Leader
 }
 
@@ -122,61 +123,64 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
+// RequestVoteArgs represents the RequestVote RPC that is invoked
+// by Candidate replicas during an election.
 type RequestVoteArgs struct {
-	// TODO: Your data here (3A, 3B).
-	Term        int
-	CandidateID int
+	Term        int // Candidate term
+	CandidateID int // Candidate requesting vote
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+// RequestVoteReply represents the reply for a RequestVote RPC
+// invoked during an election.
 type RequestVoteReply struct {
-	// TODO: Your data here (3A).
-	Term        int
-	VoteGranted bool
+	Term        int  // Current term
+	VoteGranted bool // Flag for receiving vote
 }
 
+// AppendEntriesArgs is used by the Leader to replicate log entries,
+// and send heartbeat messages to Follower replicas.
 type AppendEntriesArgs struct {
-	Term     int
-	LeaderID int
+	Term     int // Leader's term
+	LeaderID int // To allow the follower to redirect clients
 }
 
+// AppendEntriesReply represents the reply for the AppendEntries RPC.
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term    int  // Current term
+	Success bool // Flag for matching entry w/ prevLogIndex and prevLogTerm (not yet impl'd)
 }
 
 // RequestVote is an RPC handler called during the process of Leader Election.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// TODO: Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	Debug(logTrace, "S%d in RequestVote", rf.me)
 
-	// You don't get MY vote: term < currentTerm
-	if args.Term < rf.currentTerm {
+	// Term in RPC is smaller than Candidate's. Reject.
+	if rf.currentTerm > args.Term {
+		Debug(logWarn, "S%d term %d greater than requesting term %d", rf.me, rf.currentTerm, args.Term)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
 	}
 
-	// Whoever I am, I need to step down and become a follower since my term < the RPC term
+	// Leader's term at least as large, step down to Follower state.
 	if rf.currentTerm < args.Term {
-		rf.transitionFollower()
+		Debug(logTerm, "S%d term %d less than requesting term %d. Transitioning to follower...", rf.me, rf.currentTerm, args.Term)
+		rf.transitionFollower(args.Term)
 	}
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
-	// Otherwise, what will happen?
-	// if votedFor is nil, or candidateID == votedFor, && log is at least as up to date as receiver's log
-	// grant vote
-	// for now, simply do first part as valid
+	Debug(logVote, "S%d setting reply as %v", rf.me, reply)
+
+	// Should grant vote?
 	if rf.votedFor < 0 || rf.votedFor == args.CandidateID {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
-		// NOTE: send indication of vote granted
+		Debug(logVote, "S%d granting vote to %d", rf.me, rf.votedFor)
+		rf.sendVoteChan <- true
 	}
 }
 
@@ -216,32 +220,118 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// invalid state i can be in s.t. i shouldn't proceed?
+	Debug(logDebug, "S%d in sendRequestVote()", rf.me)
+
+	// bad data
 	if rf.state != Candidate || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
-		return
-	}
-	// go to follower?
-	if reply.Term > rf.currentTerm {
-		rf.transitionFollower()
+		Debug(logWarn, "S%d failure in sendRequestVote()", rf.me)
 		return
 	}
 
-	// if we recv VoteGranted?
+	// transition to follower
+	if rf.currentTerm < reply.Term {
+		Debug(logTerm, "S%d term < reply's term in sendRequestVote(), transitioning to Follower", rf.me)
+		rf.transitionFollower(reply.Term)
+		return
+	}
+
 	if reply.VoteGranted {
+		Debug(logDebug, "S%d voteTotal: %d", rf.me, rf.voteTotal)
 		rf.voteTotal++
-		// send vote somehow
+		// If we've received majority quorum, win election
+		if rf.voteTotal == len(rf.peers)/2+1 {
+			Debug(logVote, "S%d won election", rf.me)
+			rf.winElectChan <- true
+		}
 	}
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// TODO: implement me!
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.currentTerm > args.Term {
+		Debug(logTerm, "S%d term > args term in AppendEntries(), transition to Follower", rf.me)
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	Debug(logLeader, "S%d term. Do something else here? Sending heartbeat...", rf.me)
+	rf.currentTerm = reply.Term
+	// rf.sendHeartbeats()
 	rf.hbChan <- true
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	// TODO: implement me!
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	if !ok {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != Leader || reply.Term < rf.currentTerm {
+		Debug(logWarn, "S%d in bad state", rf.me)
+		return
+	}
+
+	if rf.currentTerm < reply.Term {
+		Debug(logLeader, "S%d should convert to follower", rf.me)
+		rf.transitionFollower(reply.Term)
+	}
+
+	Debug(logDebug, "S%d OK in sendAppendEntries()", rf.me)
+}
+
+func (rf *Raft) broadcastRequestVote() {
+	if rf.state != Candidate {
+		Debug(logWarn, "S%d not a Candidate in broadcastRequestVote()", rf.me)
+		return
+	}
+
+	args := RequestVoteArgs{
+		Term:        rf.currentTerm,
+		CandidateID: rf.me,
+	}
+
+	for s := range rf.peers {
+		Debug(logTrace, "S%d sending vote to %d", rf.me, s)
+		if s != rf.me {
+			reply := RequestVoteReply{}
+			go rf.sendRequestVote(s, &args, &reply)
+		}
+	}
+}
+
+// For now a simple method that broadcasts emtpy AppendEntries RPCs.
+func (rf *Raft) sendHeartbeats() {
+	if term, ok := rf.GetState(); !ok {
+		Debug(logWarn, "S%d called sendHeartbeats while in (term, state): (%v, %v)", rf.me, term, rf.state)
+		return
+	}
+
+	for s := range rf.peers {
+		if s != rf.me {
+			// send heartbeat
+			args := AppendEntriesArgs{}
+			args.Term = rf.currentTerm
+			args.LeaderID = rf.me
+			reply := AppendEntriesReply{}
+			go rf.sendAppendEntries(s, &args, &reply)
+		}
+	}
+}
+
+func (rf *Raft) resetHeartbeats() {
+	// NOTE: hold lock while calling
+	rf.hbChan = make(chan bool)
+}
+
+func (rf *Raft) resetChannels() {
+	rf.winElectChan = make(chan bool)
+	rf.sendVoteChan = make(chan bool)
+	rf.hbChan = make(chan bool)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -285,49 +375,97 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// Pause for a random amount of time between 50 and 350
+// milliseconds.
 func (rf *Raft) electionTimeout() int64 {
-	// pause for a random amount of time between 50 and 350
-	// milliseconds.
-	// ms := 50 + (rand.Int63() % 300)
-	// time.Sleep(time.Duration(ms) * time.Millisecond)
 	return 50 + (rand.Int63() % 300)
+}
+
+// Compute a heartbeatTimeout << electionTimeout
+func (rf *Raft) heartbeatTimeout() int64 {
+	return max(rf.electionTimeout()/10, 10)
 }
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
 		// TODO: Your code here (3A)
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		Debug(logDebug, "S%d in rf.ticker()", rf.me)
-		// time.Sleep(time.Duration(rf.getTimeout()) * time.Millisecond)
-		switch rf.state {
+		state := rf.state
+		rf.mu.Unlock()
+		switch state {
 		case Follower:
 			select {
 			case <-rf.hbChan:
-				Debug(logDebug, "S%d received heartbeat", rf.me)
+				Debug(logDebug, "S%d follower received heartbeat", rf.me)
 				// reset timeout
+			case <-rf.sendVoteChan:
+				Debug(logDebug, "S%d follower sent vote", rf.me)
 			default:
 				time.Sleep(time.Duration(rf.electionTimeout()) * time.Millisecond)
 				Debug(logInfo, "S%d timed out. Calling transitionCandidate()", rf.me)
-				rf.transitionCandidate()
+				rf.transitionCandidate(Follower)
 			}
 		case Candidate:
-
+			select {
+			case <-rf.winElectChan:
+				Debug(logDebug, "S%d candidate new Leader", rf.me)
+				rf.transitionLeader()
+			default:
+				time.Sleep(time.Duration(rf.electionTimeout()) * time.Millisecond)
+				Debug(logInfo, "S%d timed out. Calling transitionCandidate() in Candidate", rf.me)
+				rf.transitionCandidate(Candidate)
+			}
 		case Leader:
+			time.Sleep(time.Duration(rf.heartbeatTimeout()) * time.Millisecond)
+			Debug(logInfo, "S%d send heartbeat", rf.me)
+			rf.mu.Lock()
+			rf.sendHeartbeats()
+			rf.mu.Unlock()
 		}
 	}
 }
 
+// transitionFollower -> A new term was discovered; used by both Candidate and Leader
+func (rf *Raft) transitionFollower(term int) {
+	Debug(logDebug, "S%d transitionFollower", rf.me)
+	state := rf.state
+
+	rf.currentTerm = term
+	rf.state = Follower
+	rf.votedFor = -1
+
+	if state != Follower {
+		Debug(logError, "S%d should already be follower", rf.me)
+	}
+}
+
 // transitionCandidate -> MUST be a Follower that has timed out, suspecting the Leader failed.
-func (rf *Raft) transitionCandidate() {
-	Debug(logDebug, "S%d in transitionCandidate", rf.me)
+func (rf *Raft) transitionCandidate(state RaftState) {
+	Debug(logTrace, "S%d in transitionCandidate", rf.me)
+
+	if rf.state != state {
+		Debug(logWarn, "S%d not same as server in transition %v", rf.me, state)
+		return
+	}
+
+	rf.resetChannels()
+	rf.state = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.voteTotal = 1
+
+	Debug(logTrace, "S%d broadcasting to request votes", rf.me)
+	rf.broadcastRequestVote()
 }
 
 // transitionLeader -> MUST be a Candidate that receives values from quorum of nodes.
-func (rf *Raft) transitionLeader() {}
+func (rf *Raft) transitionLeader() {
+	Debug(logDebug, "S%d transitionLeader", rf.me)
 
-// transitionFollower -> A new term was discovered; used by both Candidate and Leader
-func (rf *Raft) transitionFollower() {}
+	rf.resetChannels()
+	rf.state = Leader
+	rf.sendHeartbeats()
+}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -364,6 +502,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 
 	rf.hbChan = make(chan bool)
+	rf.sendVoteChan = make(chan bool)
+	rf.winElectChan = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
