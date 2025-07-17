@@ -40,9 +40,10 @@ type Raft struct {
 	state     RaftState // State a given Raft replica is in (Follower, Candidate, or Leader)
 	voteTotal int       // Total votes a replica has received
 
-	hbChan       chan bool
-	sendVoteChan chan bool
-	winElectChan chan bool
+	hbChan         chan bool
+	sendVoteChan   chan bool
+	winElectChan   chan bool
+	transitionChan chan bool
 }
 
 // Type raftstate represents one of three states at any given point
@@ -54,6 +55,19 @@ const (
 	Candidate
 	Leader
 )
+
+func (r RaftState) String() string {
+	switch r {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "Unknown"
+	}
+}
 
 // Type LogEntry represents a Raft Log. A Raft log stores a state machine command
 // along with the term number when the entry was received by the Leader.
@@ -67,6 +81,8 @@ type LogEntry struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// must hold lock
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state == Leader
 }
 
@@ -154,23 +170,24 @@ type AppendEntriesReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	Debug(logTrace, "S%d in RequestVote", rf.me)
 
 	// Term in RPC is smaller than Candidate's. Reject.
-	if rf.currentTerm > args.Term {
-		Debug(logWarn, "S%d term %d greater than requesting term %d", rf.me, rf.currentTerm, args.Term)
+	if args.Term < rf.currentTerm {
+		Debug(logWarn, "S%d term %d greater than requesting term %d. Reject.", rf.me, rf.currentTerm, args.Term)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
 	}
 
 	// Leader's term at least as large, step down to Follower state.
-	if rf.currentTerm < args.Term {
+	if args.Term > rf.currentTerm {
 		Debug(logTerm, "S%d term %d less than requesting term %d. Transitioning to follower...", rf.me, rf.currentTerm, args.Term)
 		rf.transitionFollower(args.Term)
 	}
 
-	reply.Term = rf.currentTerm
+	reply.Term = args.Term
 	reply.VoteGranted = false
 
 	Debug(logVote, "S%d setting reply as %v", rf.me, reply)
@@ -180,7 +197,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 		Debug(logVote, "S%d granting vote to %d", rf.me, rf.votedFor)
-		rf.sendVoteChan <- true
+		rf.sendValOnChannel(rf.sendVoteChan, true)
+	}
+	Debug(logDebug, "S%d sent on vote channel", rf.me)
+}
+
+// Send a NON-BLOCKING value on a channel. This is required since
+// ticker() is not always ready.
+func (rf *Raft) sendValOnChannel(ch chan bool, v bool) {
+	select {
+	case ch <- v:
+		Debug(logInfo, "S%d sent val on channel", rf.me)
+	default:
 	}
 }
 
@@ -214,6 +242,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if !ok {
+		Debug(logError, "RequestVote RPC failed")
 		return
 	}
 
@@ -236,12 +265,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if reply.VoteGranted {
-		Debug(logDebug, "S%d voteTotal: %d", rf.me, rf.voteTotal)
 		rf.voteTotal++
+		Debug(logVote, "S%d voteTotal: %d", rf.me, rf.voteTotal)
 		// If we've received majority quorum, win election
 		if rf.voteTotal == len(rf.peers)/2+1 {
 			Debug(logVote, "S%d won election", rf.me)
-			rf.winElectChan <- true
+			// rf.winElectChan <- true
+			rf.sendValOnChannel(rf.winElectChan, true)
+			// rf.transitionLeader()
 		}
 	}
 }
@@ -250,6 +281,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	Debug(logLeader, "S%d term. Do something else here? Sending heartbeat...", rf.me)
 	if rf.currentTerm > args.Term {
 		Debug(logTerm, "S%d term > args term in AppendEntries(), transition to Follower", rf.me)
 		reply.Term = rf.currentTerm
@@ -257,22 +289,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	Debug(logLeader, "S%d term. Do something else here? Sending heartbeat...", rf.me)
-	rf.currentTerm = reply.Term
-	// rf.sendHeartbeats()
-	rf.hbChan <- true
+	// ???? NO!rf.currentTerm = reply.Term
+	// rf.hbChan <- true
+	rf.sendValOnChannel(rf.hbChan, true)
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if !ok {
+		Debug(logError, "AppendEntries RPC failed")
 		return
 	}
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.state != Leader || reply.Term < rf.currentTerm {
-		Debug(logWarn, "S%d in bad state", rf.me)
+	if rf.state != Leader {
+		Debug(logWarn, "S%d in not leader", rf.me)
+		return
+	}
+	if reply.Term < rf.currentTerm {
+		Debug(logWarn, "S%d bad term %d %d", rf.me, reply.Term, rf.currentTerm)
 		return
 	}
 
@@ -296,42 +333,31 @@ func (rf *Raft) broadcastRequestVote() {
 	}
 
 	for s := range rf.peers {
-		Debug(logTrace, "S%d sending vote to %d", rf.me, s)
 		if s != rf.me {
-			reply := RequestVoteReply{}
-			go rf.sendRequestVote(s, &args, &reply)
+			Debug(logTrace, "S%d sending vote to %d", rf.me, s)
+			go rf.sendRequestVote(s, &args, &RequestVoteReply{})
 		}
 	}
 }
 
 // For now a simple method that broadcasts emtpy AppendEntries RPCs.
 func (rf *Raft) sendHeartbeats() {
-	if term, ok := rf.GetState(); !ok {
-		Debug(logWarn, "S%d called sendHeartbeats while in (term, state): (%v, %v)", rf.me, term, rf.state)
+	// if term, ok := rf.GetState(); !ok {
+	if rf.state != Leader {
+		Debug(logWarn, "S%d called sendHeartbeats while in state:  %v", rf.me, rf.state)
 		return
 	}
 
+	args := AppendEntriesArgs{}
+	args.Term = rf.currentTerm
+	args.LeaderID = rf.me
 	for s := range rf.peers {
 		if s != rf.me {
 			// send heartbeat
-			args := AppendEntriesArgs{}
-			args.Term = rf.currentTerm
-			args.LeaderID = rf.me
 			reply := AppendEntriesReply{}
 			go rf.sendAppendEntries(s, &args, &reply)
 		}
 	}
-}
-
-func (rf *Raft) resetHeartbeats() {
-	// NOTE: hold lock while calling
-	rf.hbChan = make(chan bool)
-}
-
-func (rf *Raft) resetChannels() {
-	rf.winElectChan = make(chan bool)
-	rf.sendVoteChan = make(chan bool)
-	rf.hbChan = make(chan bool)
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -378,17 +404,18 @@ func (rf *Raft) killed() bool {
 // Pause for a random amount of time between 50 and 350
 // milliseconds.
 func (rf *Raft) electionTimeout() int64 {
-	return 50 + (rand.Int63() % 300)
+	return 150 + (rand.Int63() % 300)
 }
 
 // Compute a heartbeatTimeout << electionTimeout
 func (rf *Raft) heartbeatTimeout() int64 {
-	return max(rf.electionTimeout()/10, 10)
+	return max(rf.electionTimeout()/10, 50)
 }
 
 func (rf *Raft) ticker() {
+	// NOTE: The ticker HAS to block for EVERYTHING, or else we will never actually
+	// transition into any state and always timeout.
 	for !rf.killed() {
-		// TODO: Your code here (3A)
 		rf.mu.Lock()
 		state := rf.state
 		rf.mu.Unlock()
@@ -397,11 +424,9 @@ func (rf *Raft) ticker() {
 			select {
 			case <-rf.hbChan:
 				Debug(logDebug, "S%d follower received heartbeat", rf.me)
-				// reset timeout
 			case <-rf.sendVoteChan:
-				Debug(logDebug, "S%d follower sent vote", rf.me)
-			default:
-				time.Sleep(time.Duration(rf.electionTimeout()) * time.Millisecond)
+				Debug(logDebug, "S%d follower received vote chan", rf.me)
+			case <-time.After(time.Duration(rf.electionTimeout()) * time.Millisecond):
 				Debug(logInfo, "S%d timed out. Calling transitionCandidate()", rf.me)
 				rf.transitionCandidate(Follower)
 			}
@@ -410,59 +435,79 @@ func (rf *Raft) ticker() {
 			case <-rf.winElectChan:
 				Debug(logDebug, "S%d candidate new Leader", rf.me)
 				rf.transitionLeader()
-			default:
-				time.Sleep(time.Duration(rf.electionTimeout()) * time.Millisecond)
+			case <-rf.transitionChan:
+				Debug(logDebug, "S%d candidate transition", rf.me)
+			case <-time.After(time.Duration(rf.electionTimeout()) * time.Millisecond):
 				Debug(logInfo, "S%d timed out. Calling transitionCandidate() in Candidate", rf.me)
 				rf.transitionCandidate(Candidate)
 			}
 		case Leader:
-			time.Sleep(time.Duration(rf.heartbeatTimeout()) * time.Millisecond)
-			Debug(logInfo, "S%d send heartbeat", rf.me)
-			rf.mu.Lock()
-			rf.sendHeartbeats()
-			rf.mu.Unlock()
+			select {
+			case <-rf.transitionChan:
+				Debug(logDebug, "S%d leader transition", rf.me)
+			case <-time.After(time.Duration(rf.heartbeatTimeout()) * time.Millisecond):
+				Debug(logInfo, "S%d send heartbeat", rf.me)
+				rf.mu.Lock()
+				rf.sendHeartbeats()
+				rf.mu.Unlock()
+			}
 		}
 	}
 }
 
 // transitionFollower -> A new term was discovered; used by both Candidate and Leader
 func (rf *Raft) transitionFollower(term int) {
-	Debug(logDebug, "S%d transitionFollower", rf.me)
+	// must hold lock when call
+	Debug(logDebug, "S%d transitionFollower. Current state: %s", rf.me, rf.state)
 	state := rf.state
 
 	rf.currentTerm = term
 	rf.state = Follower
 	rf.votedFor = -1
 
+	// NOTE: this is required or we run into weird race condition
 	if state != Follower {
 		Debug(logError, "S%d should already be follower", rf.me)
+		rf.sendValOnChannel(rf.transitionChan, true)
 	}
 }
 
 // transitionCandidate -> MUST be a Follower that has timed out, suspecting the Leader failed.
 func (rf *Raft) transitionCandidate(state RaftState) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	Debug(logTrace, "S%d in transitionCandidate", rf.me)
 
 	if rf.state != state {
 		Debug(logWarn, "S%d not same as server in transition %v", rf.me, state)
-		return
 	}
 
-	rf.resetChannels()
-	rf.state = Candidate
 	rf.currentTerm++
+	rf.state = Candidate
 	rf.votedFor = rf.me
 	rf.voteTotal = 1
 
 	Debug(logTrace, "S%d broadcasting to request votes", rf.me)
-	rf.broadcastRequestVote()
+	// rf.broadcastRequestVote()
+	args := RequestVoteArgs{
+		Term:        rf.currentTerm,
+		CandidateID: rf.me,
+	}
+
+	for s := range rf.peers {
+		if s != rf.me {
+			Debug(logTrace, "S%d sending vote to %d", rf.me, s)
+			go rf.sendRequestVote(s, &args, &RequestVoteReply{})
+		}
+	}
 }
 
 // transitionLeader -> MUST be a Candidate that receives values from quorum of nodes.
 func (rf *Raft) transitionLeader() {
-	Debug(logDebug, "S%d transitionLeader", rf.me)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	Debug(logInfo, "S%d in transitionLeader()", rf.me)
 
-	rf.resetChannels()
 	rf.state = Leader
 	rf.sendHeartbeats()
 }
@@ -504,6 +549,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.hbChan = make(chan bool)
 	rf.sendVoteChan = make(chan bool)
 	rf.winElectChan = make(chan bool)
+	rf.transitionChan = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
